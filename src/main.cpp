@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <micro_ros_platformio.h>
-
 #include <rcl/rcl.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
@@ -10,29 +9,24 @@
 #error This example requires Arduino serial transport for micro-ROS
 #endif
 
-// micro-ROS core
+// ==== Pin cấu hình ====
+#define PUL_PINS   {18, 14, 32, 25}
+#define DIR_PINS   {19, 27, 33, 26}
+#define CHANNELS   {0, 1, 2, 3}
+
+// ==== micro-ROS ====
 rcl_node_t node;
-rcl_subscription_t subscriber;
-rcl_publisher_t publisher;
-rcl_timer_t timer;
+rcl_subscription_t freq_sub;
+rcl_publisher_t log_pub;
 rclc_executor_t executor;
 rcl_allocator_t allocator;
 rclc_support_t support;
 
 std_msgs__msg__String input_msg;
-std_msgs__msg__String output_msg;
+std_msgs__msg__String log_msg;
 
-// Trạng thái theo dõi
-char feedback_buffer[64];
-volatile bool command_received = false;
-
-// LED_BUILTIN (GPIO2)
-const int led_pin = 2;
-
-// ========== Hàm lỗi ==========
 void error_loop() {
   while (1) {
-    Serial.println("[ERROR] micro-ROS init failed.");
     delay(1000);
   }
 }
@@ -40,115 +34,112 @@ void error_loop() {
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if ((temp_rc != RCL_RET_OK)) { error_loop(); }}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if ((temp_rc != RCL_RET_OK)) {}}
 
-// ========== Xử lý lệnh ==========
-void parse_and_execute(const char *data) {
-  if (strncmp(data, "SET ", 4) != 0) {
-    snprintf(feedback_buffer, sizeof(feedback_buffer), "[ERROR] Invalid format: %s", data);
-    return;
-  }
+// ==== Gửi log ra topic output_log ====
+void publish_log(const char* format, ...) {
+  static char buffer[128];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
 
-  int pin = -1, state = -1;
-  if (sscanf(data + 4, "%d-%d", &pin, &state) == 2) {
-    if (pin >= 0 && pin <= 39 && (state == 0 || state == 1)) {
-      pinMode(pin, OUTPUT);
-      digitalWrite(pin, state);
-      snprintf(feedback_buffer, sizeof(feedback_buffer), "[LOG] DONE SET %d-%d", pin, state);
-      Serial.printf("[INFO] GPIO %d set to %d\n", pin, state);
-    } else {
-      snprintf(feedback_buffer, sizeof(feedback_buffer), "[ERROR] Invalid pin/state: %d-%d", pin, state);
-    }
+  strncpy(log_msg.data.data, buffer, log_msg.data.capacity - 1);
+  log_msg.data.data[log_msg.data.capacity - 1] = '\0';
+  log_msg.data.size = strlen(log_msg.data.data);
+
+  rcl_publish(&log_pub, &log_msg, NULL);
+}
+
+// ==== Hàm xử lý PWM + DIR ====
+void set_motor_freq_and_dir(long freqs[4], int dirs[4]) {
+  const int pwm_pins[4] = PUL_PINS;
+  const int dir_pins[4] = DIR_PINS;
+  const int channels[4] = CHANNELS;
+
+  for (int i = 0; i < 4; i++) {
+    int res;
+    if (freqs[i] >= 500000) res = 6;
+    else if (freqs[i] >= 250000) res = 7;
+    else if (freqs[i] >= 125000) res = 8;
+    else if (freqs[i] >= 60000)  res = 9;
+    else res = 10;
+
+    int max_duty = (1 << res) - 1;
+    ledcSetup(channels[i], freqs[i], res);
+    ledcAttachPin(pwm_pins[i], channels[i]);
+    ledcWrite(channels[i], max_duty / 2);  // 50% duty
+
+    digitalWrite(dir_pins[i], dirs[i]);
+
+    publish_log("[LOG] Motor %d: Freq=%ld Hz, Dir=%d", i + 1, freqs[i], dirs[i]);
+  }
+}
+
+// ==== Callback khi nhận lệnh từ freq_cmd ====
+void freq_cmd_callback(const void* msgin) {
+  const std_msgs__msg__String* msg = (const std_msgs__msg__String*)msgin;
+  publish_log("[INFO] Received command: %s", msg->data.data);
+
+  long freqs[4];
+  int dirs[4];
+
+  // Parse theo định dạng "SET f1 d1 f2 d2 f3 d3 f4 d4"
+  if (sscanf(msg->data.data, "SET %ld %d %ld %d %ld %d %ld %d",
+             &freqs[0], &dirs[0], &freqs[1], &dirs[1],
+             &freqs[2], &dirs[2], &freqs[3], &dirs[3]) == 8) {
+    set_motor_freq_and_dir(freqs, dirs);
   } else {
-    snprintf(feedback_buffer, sizeof(feedback_buffer), "[ERROR] Parse error: %s", data);
+    publish_log("[ERROR] Invalid format: %s", msg->data.data);
   }
 }
 
-// ========== Callback subscriber ==========
-void subscription_callback(const void *msgin) {
-  const std_msgs__msg__String *msg = (const std_msgs__msg__String *)msgin;
-
-  Serial.println("[DEBUG] subscription_callback called");
-  digitalWrite(led_pin, !digitalRead(led_pin));  // Toggle LED
-
-  command_received = true;
-
-  Serial.printf("[INFO] Received: %s\n", msg->data.data);
-
-  parse_and_execute(msg->data.data);
-
-  strncpy(output_msg.data.data, feedback_buffer, output_msg.data.capacity - 1);
-  output_msg.data.data[output_msg.data.capacity - 1] = '\0';
-  output_msg.data.size = strlen(output_msg.data.data);
-
-  rcl_publish(&publisher, &output_msg, NULL);
-  Serial.printf("[INFO] Sent to output_cmd: %s\n", output_msg.data.data);
-}
-
-// ========== Callback timer ==========
-void timer_callback(rcl_timer_t *, int64_t) {
-  if (!command_received) {
-    const char *waiting_msg = "[INFO] waiting for command";
-    strncpy(output_msg.data.data, waiting_msg, output_msg.data.capacity - 1);
-    output_msg.data.data[output_msg.data.capacity - 1] = '\0';
-    output_msg.data.size = strlen(output_msg.data.data);
-
-    rcl_publish(&publisher, &output_msg, NULL);
-    Serial.println("[TIMER] waiting for command (no new data)");
-  }
-  command_received = false;
-}
-
-// ========== Setup ==========
+// ==== Setup ====
 void setup() {
   Serial.begin(115200);
   set_microros_serial_transports(Serial);
   delay(2000);
 
-  pinMode(led_pin, OUTPUT);  // LED để debug nháy khi nhận lệnh
+  const int dir_pins[4] = DIR_PINS;
+  for (int i = 0; i < 4; i++) {
+    pinMode(dir_pins[i], OUTPUT);
+    digitalWrite(dir_pins[i], LOW);
+  }
 
   allocator = rcl_get_default_allocator();
 
   RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
-  RCCHECK(rclc_node_init_default(&node, "esp32_gpio_node", "", &support));
+  RCCHECK(rclc_node_init_default(&node, "motor_node", "", &support));
 
   // Subscriber
   RCCHECK(rclc_subscription_init_default(
-    &subscriber,
+    &freq_sub,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-    "input_cmd"));
+    "freq_cmd"));
 
   // Publisher
   RCCHECK(rclc_publisher_init_default(
-    &publisher,
+    &log_pub,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
-    "output_cmd"));
+    "output_log"));
 
-  // ✅ Cấp phát bộ nhớ
-  input_msg.data.data = (char *)malloc(64);
+  // Cấp phát bộ nhớ
+  input_msg.data.data = (char*)malloc(128);
   input_msg.data.size = 0;
-  input_msg.data.capacity = 64;
+  input_msg.data.capacity = 128;
 
-  output_msg.data.data = (char *)malloc(64);
-  output_msg.data.size = 0;
-  output_msg.data.capacity = 64;
-
-  // Timer 5 giây
-  RCCHECK(rclc_timer_init_default(
-    &timer,
-    &support,
-    RCL_MS_TO_NS(5000),
-    timer_callback));
+  log_msg.data.data = (char*)malloc(128);
+  log_msg.data.size = 0;
+  log_msg.data.capacity = 128;
 
   // Executor
-  RCCHECK(rclc_executor_init(&executor, &support.context, 2, &allocator));
-  RCCHECK(rclc_executor_add_subscription(&executor, &subscriber, &input_msg, &subscription_callback, ON_NEW_DATA));
-  RCCHECK(rclc_executor_add_timer(&executor, &timer));
+  RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+  RCCHECK(rclc_executor_add_subscription(&executor, &freq_sub, &input_msg, &freq_cmd_callback, ON_NEW_DATA));
 
-  Serial.println("[INFO] Node initialized. Waiting for input...");
+  publish_log("[INFO] micro-ROS motor node ready.");
 }
 
-// ========== Loop ==========
+// ==== Loop ====
 void loop() {
   rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
 }
