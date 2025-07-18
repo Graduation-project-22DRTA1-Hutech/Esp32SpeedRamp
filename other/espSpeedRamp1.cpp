@@ -1,79 +1,145 @@
 #include <Arduino.h>
+#include <micro_ros_platformio.h>
+#include <rcl/rcl.h>
+#include <rclc/rclc.h>
+#include <rclc/executor.h>
+#include <std_msgs/msg/string.h>
 
-// Định nghĩa các chân PWM và DIR cho từng động cơ
-#define PUL1_PIN 18
-#define PUL2_PIN 14
-#define PUL3_PIN 32
-#define PUL4_PIN 25
+#if !defined(MICRO_ROS_TRANSPORT_ARDUINO_SERIAL)
+#error This example requires Arduino serial transport for micro-ROS
+#endif
 
-#define DIR1_PIN 19
-#define DIR2_PIN 27
-#define DIR3_PIN 33
-#define DIR4_PIN 26
+// ==== Pin cấu hình ====
+#define PUL_PINS   {18, 14, 32, 25}
+#define DIR_PINS   {19, 27, 33, 26}
+#define CHANNELS   {0, 1, 2, 3}
 
-// Định nghĩa các kênh PWM
-#define PWM_CHANNEL_1 0
-#define PWM_CHANNEL_2 1
-#define PWM_CHANNEL_3 2
-#define PWM_CHANNEL_4 3
+// ==== micro-ROS ====
+rcl_node_t node;
+rcl_subscription_t freq_sub;
+rcl_publisher_t log_pub;
+rclc_executor_t executor;
+rcl_allocator_t allocator;
+rclc_support_t support;
 
-// Hàm xử lý PWM cho 4 động cơ với tần số và duty cycle riêng
-void ProcessFrequency_MultiMotor(long freq[4], float duty_cycle[4]) {
-  int channels[4] = {PWM_CHANNEL_1, PWM_CHANNEL_2, PWM_CHANNEL_3, PWM_CHANNEL_4};
-  int pins[4] = {PUL1_PIN, PUL2_PIN, PUL3_PIN, PUL4_PIN};
+std_msgs__msg__String input_msg;
+std_msgs__msg__String log_msg;
 
-  for (int i = 0; i < 4; i++) {
-    int PWM_RESOLUTION;
-
-    // Xác định độ phân giải theo tần số từng động cơ
-    if (freq[i] >= 500000)
-      PWM_RESOLUTION = 6;
-    else if (freq[i] >= 250000)
-      PWM_RESOLUTION = 7;
-    else if (freq[i] >= 125000)
-      PWM_RESOLUTION = 8;
-    else if (freq[i] >= 60000)
-      PWM_RESOLUTION = 9;
-    else
-      PWM_RESOLUTION = 10;
-
-    int max_duty = (1 << PWM_RESOLUTION) - 1;
-
-    ledcSetup(channels[i], freq[i], PWM_RESOLUTION); // Thiết lập tần số và độ phân giải
-    ledcAttachPin(pins[i], channels[i]);              // Gắn pin PWM
-    ledcWrite(channels[i], (duty_cycle[i] * max_duty) / 100.0); // Viết duty cycle
-  }
-
-  // In trạng thái ra Serial
-  for (int i = 0; i < 4; i++) {
-    Serial.print("Motor ");
-    Serial.print(i + 1);
-    Serial.print(" - Freq: ");
-    Serial.print(freq[i]);
-    Serial.print(" Hz; Duty: ");
-    Serial.print(duty_cycle[i], 1);
-    Serial.println("%");
+void error_loop() {
+  while (1) {
+    delay(1000);
   }
 }
 
+#define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if ((temp_rc != RCL_RET_OK)) { error_loop(); }}
+#define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if ((temp_rc != RCL_RET_OK)) {}}
+
+// ==== Gửi log ra topic output_log ====
+void publish_log(const char* format, ...) {
+  static char buffer[128];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+
+  strncpy(log_msg.data.data, buffer, log_msg.data.capacity - 1);
+  log_msg.data.data[log_msg.data.capacity - 1] = '\0';
+  log_msg.data.size = strlen(log_msg.data.data);
+
+  rcl_publish(&log_pub, &log_msg, NULL);
+}
+
+// ==== Hàm xử lý PWM + DIR ====
+void set_motor_freq_and_dir(long freqs[4], int dirs[4]) {
+  const int pwm_pins[4] = PUL_PINS;
+  const int dir_pins[4] = DIR_PINS;
+  const int channels[4] = CHANNELS;
+
+  for (int i = 0; i < 4; i++) {
+    int res;
+    if (freqs[i] >= 500000) res = 6;
+    else if (freqs[i] >= 250000) res = 7;
+    else if (freqs[i] >= 125000) res = 8;
+    else if (freqs[i] >= 60000)  res = 9;
+    else res = 10;
+
+    int max_duty = (1 << res) - 1;
+    ledcSetup(channels[i], freqs[i], res);
+    ledcAttachPin(pwm_pins[i], channels[i]);
+    ledcWrite(channels[i], max_duty / 2);  // 50% duty
+
+    digitalWrite(dir_pins[i], dirs[i]);
+
+    publish_log("[LOG] Motor %d: Freq=%ld Hz, Dir=%d", i + 1, freqs[i], dirs[i]);
+  }
+}
+
+// ==== Callback khi nhận lệnh từ freq_cmd ====
+void freq_cmd_callback(const void* msgin) {
+  const std_msgs__msg__String* msg = (const std_msgs__msg__String*)msgin;
+  publish_log("[INFO] Received command: %s", msg->data.data);
+
+  long freqs[4];
+  int dirs[4];
+
+  // Parse theo định dạng "SET f1 d1 f2 d2 f3 d3 f4 d4"
+  if (sscanf(msg->data.data, "SET %ld %d %ld %d %ld %d %ld %d",
+             &freqs[0], &dirs[0], &freqs[1], &dirs[1],
+             &freqs[2], &dirs[2], &freqs[3], &dirs[3]) == 8) {
+    set_motor_freq_and_dir(freqs, dirs);
+  } else {
+    publish_log("[ERROR] Invalid format: %s", msg->data.data);
+  }
+}
+
+// ==== Setup ====
 void setup() {
   Serial.begin(115200);
-  delay(200);
+  set_microros_serial_transports(Serial);
+  delay(2000);
 
-  // Thiết lập chiều quay (có thể tùy chỉnh HIGH/LOW tuỳ yêu cầu)
-  pinMode(DIR1_PIN, OUTPUT); digitalWrite(DIR1_PIN, HIGH);
-  pinMode(DIR2_PIN, OUTPUT); digitalWrite(DIR2_PIN, HIGH);
-  pinMode(DIR3_PIN, OUTPUT); digitalWrite(DIR3_PIN, HIGH);
-  pinMode(DIR4_PIN, OUTPUT); digitalWrite(DIR4_PIN, HIGH);
+  const int dir_pins[4] = DIR_PINS;
+  for (int i = 0; i < 4; i++) {
+    pinMode(dir_pins[i], OUTPUT);
+    digitalWrite(dir_pins[i], LOW);
+  }
 
-  // Thiết lập tần số và duty cycle riêng cho từng động cơ
-  long freqs[4] = {5000, 2500, 10000, 15000};     // Tần số (Hz)
-  float duties[4] = {50, 50, 50, 50};   // Duty cycle (%)
+  allocator = rcl_get_default_allocator();
 
-  // Gọi hàm điều khiển 4 động cơ đồng thời
-  ProcessFrequency_MultiMotor(freqs, duties);
+  RCCHECK(rclc_support_init(&support, 0, NULL, &allocator));
+  RCCHECK(rclc_node_init_default(&node, "motor_node", "", &support));
+
+  // Subscriber
+  RCCHECK(rclc_subscription_init_default(
+    &freq_sub,
+    &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+    "freq_cmd"));
+
+  // Publisher
+  RCCHECK(rclc_publisher_init_default(
+    &log_pub,
+    &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+    "output_log"));
+
+  // Cấp phát bộ nhớ
+  input_msg.data.data = (char*)malloc(128);
+  input_msg.data.size = 0;
+  input_msg.data.capacity = 128;
+
+  log_msg.data.data = (char*)malloc(128);
+  log_msg.data.size = 0;
+  log_msg.data.capacity = 128;
+
+  // Executor
+  RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+  RCCHECK(rclc_executor_add_subscription(&executor, &freq_sub, &input_msg, &freq_cmd_callback, ON_NEW_DATA));
+
+  publish_log("[INFO] micro-ROS motor node ready.");
 }
 
+// ==== Loop ====
 void loop() {
-  // Để trống hoặc thêm logic điều khiển khác tại đây
+  rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
 }

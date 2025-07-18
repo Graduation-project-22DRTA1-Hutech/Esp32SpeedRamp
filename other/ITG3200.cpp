@@ -80,8 +80,7 @@ void loop() {
     Serial.print(gy); Serial.print("\t");
     Serial.println(gz);
 
-    // // blink LED to indicate activity
-    // blinkState = !blinkState;
-    // digitalWrite(LED_PIN, blinkState);
-    delay(100); // small delay to make the blinking visible
+    // blink LED to indicate activity
+    blinkState = !blinkState;
+    digitalWrite(LED_PIN, blinkState);
 }
