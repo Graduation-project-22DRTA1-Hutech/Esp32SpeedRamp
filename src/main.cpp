@@ -1,87 +1,69 @@
-// I2C device class (I2Cdev) demonstration Arduino sketch for ITG3200 class
-// 10/7/2011 by Jeff Rowberg <jeff@rowberg.net>
-// Updates should (hopefully) always be available at https://github.com/jrowberg/i2cdevlib
-//
-// Changelog:
-//     2011-10-07 - initial release
+#include <Arduino.h>
+#include <DFRobot_BMX160.h>
 
-/* ============================================
-I2Cdev device library code is placed under the MIT license
-Copyright (c) 2011 Jeff Rowberg
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-===============================================
-*/
-
-// Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
-// is used in I2Cdev.h
-#include "Wire.h"
-
-// I2Cdev and ITG3200 must be installed as libraries, or else the .cpp/.h files
-// for both classes must be in the include path of your project
-#include "I2Cdev.h"
-#include "ITG3200.h"
-
-// class default I2C address is 0x68
-// specific I2C addresses may be passed as a parameter here
-// AD0 low = 0x68 (default for SparkFun 6DOF board)
-// AD0 high = 0x69 (default for SparkFun ITG-3200 standalone board)
-ITG3200 gyro;
-
-int16_t gx, gy, gz;
-
-#define LED_PIN 2
-bool blinkState = false;
-
-void setup() {
-    // join I2C bus (I2Cdev library doesn't do this automatically)
-    Wire.begin();
-
-    // initialize serial communication
-    // (38400 chosen because it works as well at 8MHz as it does at 16MHz, but
-    // it's really up to you depending on your project)
-    Serial.begin(115200);
-
-    // initialize device
-    Serial.println("Initializing I2C devices...");
-    gyro.initialize();
-
-    // verify connection
-    Serial.println("Testing device connections...");
-    Serial.println(gyro.testConnection() ? "ITG3200 connection successful" : "ITG3200 connection failed");
-
-    // configure Arduino LED pin for output
-    pinMode(LED_PIN, OUTPUT);
+DFRobot_BMX160 bmx160;
+void setup(){
+  Serial.begin(115200);
+  delay(100);
+  
+  //init the hardware bmx160  
+  if (bmx160.begin() != true){
+    Serial.println("init false");
+    while(1);
+  }
+  //bmx160.setLowPower();   //disable the gyroscope and accelerometer sensor
+  //bmx160.wakeUp();        //enable the gyroscope and accelerometer sensor
+  //bmx160.softReset();     //reset the sensor
+  
+  /** 
+   * enum{eGyroRange_2000DPS,
+   *       eGyroRange_1000DPS,
+   *       eGyroRange_500DPS,
+   *       eGyroRange_250DPS,
+   *       eGyroRange_125DPS
+   *       }eGyroRange_t;
+   **/
+  //bmx160.setGyroRange(eGyroRange_500DPS);
+  
+  /**
+   *  enum{eAccelRange_2G,
+   *       eAccelRange_4G,
+   *       eAccelRange_8G,
+   *       eAccelRange_16G
+   *       }eAccelRange_t;
+   */
+  //bmx160.setAccelRange(eAccelRange_4G);
+  delay(100);
 }
 
-void loop() {
-    // read raw gyro measurements from device
-    gyro.getRotation(&gx, &gy, &gz);
+void loop(){
+  sBmx160SensorData_t Omagn, Ogyro, Oaccel;
 
-    // display tab-separated gyro x/y/z values
-    Serial.print("gyro:\t");
-    Serial.print(gx); Serial.print("\t");
-    Serial.print(gy); Serial.print("\t");
-    Serial.println(gz);
+  /* Get a new sensor event */
+  bmx160.getAllData(&Omagn, &Ogyro, &Oaccel);
 
-    // // blink LED to indicate activity
-    // blinkState = !blinkState;
-    // digitalWrite(LED_PIN, blinkState);
-    delay(100); // small delay to make the blinking visible
+  /* Display the magnetometer results (magn is magnetometer in uTesla) */
+  Serial.print("M ");
+  Serial.print("X: "); Serial.print(Omagn.x); Serial.print("  ");
+  Serial.print("Y: "); Serial.print(Omagn.y); Serial.print("  ");
+  Serial.print("Z: "); Serial.print(Omagn.z); Serial.print("  ");
+  Serial.println("uT");
+
+  /* Display the gyroscope results (gyroscope data is in g) */
+  Serial.print("G ");
+  Serial.print("X: "); Serial.print(Ogyro.x); Serial.print("  ");
+  Serial.print("Y: "); Serial.print(Ogyro.y); Serial.print("  ");
+  Serial.print("Z: "); Serial.print(Ogyro.z); Serial.print("  ");
+  Serial.println("g");
+  
+  /* Display the accelerometer results (accelerometer data is in m/s^2) */
+  Serial.print("A ");
+  Serial.print("X: "); Serial.print(Oaccel.x    ); Serial.print("  ");
+  Serial.print("Y: "); Serial.print(Oaccel.y    ); Serial.print("  ");
+  Serial.print("Z: "); Serial.print(Oaccel.z    ); Serial.print("  ");
+  Serial.println("m/s^2");
+
+  Serial.println("");
+
+  delay(500);
 }
