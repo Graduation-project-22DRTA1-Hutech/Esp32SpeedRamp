@@ -68,17 +68,18 @@ void publish_log(const char* format, ...) {
 
 // ==== PCNT Encoder Setup ====
 void setup_pcnt_encoder(int i) {
-  pcnt_config_t pcnt_config;
-  pcnt_config.pulse_gpio_num = encoder_pins[i];
-  pcnt_config.ctrl_gpio_num = PCNT_PIN_NOT_USED;
-  pcnt_config.channel = PCNT_CHANNEL_0;
-  pcnt_config.unit = PCNT_UNITS[i];
-  pcnt_config.pos_mode = PCNT_COUNT_INC;
-  pcnt_config.neg_mode = PCNT_COUNT_DIS;
-  pcnt_config.lctrl_mode = PCNT_MODE_KEEP;
-  pcnt_config.hctrl_mode = PCNT_MODE_KEEP;
-  pcnt_config.counter_h_lim = 32767;
-  pcnt_config.counter_l_lim = -32768;
+  pcnt_config_t pcnt_config = {
+    .pulse_gpio_num = encoder_pins[i],
+    .ctrl_gpio_num = PCNT_PIN_NOT_USED,
+    .channel = PCNT_CHANNEL_0,
+    .unit = PCNT_UNITS[i],
+    .pos_mode = PCNT_COUNT_INC,
+    .neg_mode = PCNT_COUNT_DIS,
+    .lctrl_mode = PCNT_MODE_KEEP,
+    .hctrl_mode = PCNT_MODE_KEEP,
+    .counter_h_lim = 32767,
+    .counter_l_lim = -32768
+  };
   pcnt_unit_config(&pcnt_config);
   pcnt_counter_pause(PCNT_UNITS[i]);
   pcnt_counter_clear(PCNT_UNITS[i]);
