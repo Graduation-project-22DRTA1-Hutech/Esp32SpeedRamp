@@ -1,51 +1,39 @@
-#include <Arduino.h>
-
 // ===== ENCODER QUICK TEST FOR ESP32 =====
-// ISR đọc digitalRead() mỗi lần có interrupt
-// Không tối ưu nhưng dùng để TEST thì quá đủ
+// Kiểm tra xem ESP32 có nhận xung từ RS422->TTL không
+// Copy y chang, không cần thư viện nào
 
 volatile long enc0 = 0;
 volatile long enc1 = 0;
 volatile long enc2 = 0;
 volatile long enc3 = 0;
 
+// ==== CHỈ THAY NẾU CHÂN MÀY KHÁC ====
+// Dùng default chân tao set cho mày:
+// FL = 34, FR = 35, RL = 36, RR = 39
 #define ENC_FL 34
 #define ENC_FR 35
 #define ENC_RL 36
 #define ENC_RR 39
 
-void IRAM_ATTR isr_fl() {
-  int val = digitalRead(ENC_FL);
-  if (val == HIGH) enc0++; 
-}
-
-void IRAM_ATTR isr_fr() {
-  int val = digitalRead(ENC_FR);
-  if (val == HIGH) enc1++;
-}
-
-void IRAM_ATTR isr_rl() {
-  int val = digitalRead(ENC_RL);
-  if (val == HIGH) enc2++;
-}
-
-void IRAM_ATTR isr_rr() {
-  int val = digitalRead(ENC_RR);
-  if (val == HIGH) enc3++;
-}
+void IRAM_ATTR isr_fl() { enc0++; }
+void IRAM_ATTR isr_fr() { enc1++; }
+void IRAM_ATTR isr_rl() { enc2++; }
+void IRAM_ATTR isr_rr() { enc3++; }
 
 void setup() {
   Serial.begin(115200);
   delay(500);
 
-  Serial.println("===== ENCODER TEST (ISR digitalRead) =====");
+  Serial.println("===== ENCODER TEST STARTED =====");
+  Serial.println("Quay robot, xem xung có nhảy không");
+  Serial.println("Nếu tất cả đều 0 -> wiring sai, hoặc RS422->TTL không ra tín hiệu");
 
   pinMode(ENC_FL, INPUT_PULLUP);
   pinMode(ENC_FR, INPUT_PULLUP);
   pinMode(ENC_RL, INPUT_PULLUP);
   pinMode(ENC_RR, INPUT_PULLUP);
 
-  // dùng CHANGE để bắt cả lên và xuống, ISR sẽ lọc theo mức HIGH
+  // Dùng CHANGE vì module RS422->TTL thường toggle mức
   attachInterrupt(ENC_FL, isr_fl, CHANGE);
   attachInterrupt(ENC_FR, isr_fr, CHANGE);
   attachInterrupt(ENC_RL, isr_rl, CHANGE);
@@ -56,6 +44,7 @@ void loop() {
   static unsigned long last = 0;
   if (millis() - last > 300) {
     last = millis();
+
     Serial.print("FL: "); Serial.print(enc0);
     Serial.print("   FR: "); Serial.print(enc1);
     Serial.print("   RL: "); Serial.print(enc2);
